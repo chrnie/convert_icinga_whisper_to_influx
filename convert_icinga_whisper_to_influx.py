@@ -119,29 +119,36 @@ client = InfluxDBClient(
 )
 logging.info(f"Connected to InfluxDB at {url}.")
 
-# Query InfluxDB for metrics using InfluxQL
-query = f'''
-SELECT FIRST(value) FROM "checkcommand"
-WHERE time >= '{config['start_date']}'
-GROUP BY "hostname", "service", "metric"
-'''
-result = client.query(query)
-metrics_count = len(list(result.get_points()))
-logging.info(f"Query executed. Number of metrics found: {metrics_count}")
+# Query InfluxDB for all measurements
+measurements = client.get_list_measurements()
+logging.info(f"Found {len(measurements)} measurements.")
 
-for measurement in result.get_points():
-    hostname = measurement['hostname']
-    servicename = measurement['service']
-    checkcommand = "checkcommand"
-    metric = measurement['metric']
-    end_timestamp = int(datetime.strptime(measurement['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+for measurement in measurements:
+    measurement_name = measurement['name']
+    logging.info(f"Processing measurement: {measurement_name}")
 
-    wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
+    # Query each measurement for metrics
+    query = f'''
+    SELECT FIRST(*) FROM "{measurement_name}"
+    WHERE time >= '{config['start_date']}'
+    GROUP BY "hostname", "service", "metric"
+    '''
+    result = client.query(query)
+    metrics_count = len(list(result.get_points()))
+    logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
-    if os.path.isfile(wsp_file_path):
-        logging.info(f"Processing WSP file: {wsp_file_path}")
-        convert_and_write_to_influx(
-            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
-        )
-    else:
-        logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
+    for point in result.get_points():
+        hostname = point['hostname']
+        servicename = point['service']
+        metric = point['metric']
+        end_timestamp = int(datetime.strptime(point['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+
+        wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
+
+        if os.path.isfile(wsp_file_path):
+            logging.info(f"Processing WSP file: {wsp_file_path}")
+            convert_and_write_to_influx(
+                wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
+            )
+        else:
+            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
