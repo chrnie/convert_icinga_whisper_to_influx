@@ -95,6 +95,7 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
 # Load configuration
 with open(args.config, 'r') as file:
     config = yaml.safe_load(file)
+logging.info("Configuration loaded successfully.")
 
 influx_config = config['influxdb']
 BASE_PATH = config['base_path']
@@ -116,6 +117,7 @@ client = InfluxDBClient(
     ssl=(scheme == 'https'),
     verify_ssl=False  # Disable SSL verification
 )
+logging.info(f"Connected to InfluxDB at {url}.")
 
 # Query InfluxDB for metrics using InfluxQL
 query = f'''
@@ -124,6 +126,8 @@ WHERE time >= '{config['start_date']}'
 GROUP BY "hostname", "service", "metric"
 '''
 result = client.query(query)
+metrics_count = len(list(result.get_points()))
+logging.info(f"Query executed. Number of metrics found: {metrics_count}")
 
 for measurement in result.get_points():
     hostname = measurement['hostname']
@@ -135,6 +139,7 @@ for measurement in result.get_points():
     wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
 
     if os.path.isfile(wsp_file_path):
+        logging.info(f"Processing WSP file: {wsp_file_path}")
         convert_and_write_to_influx(
             wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
         )
