@@ -8,6 +8,10 @@ import yaml
 from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import argparse
+import urllib3
+
+# Suppress only the single InsecureRequestWarning from urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Process InfluxDB and convert wsp to line protocol.")
@@ -109,7 +113,8 @@ client = InfluxDBClient(
     username=influx_config['user'],
     password=influx_config['password'],
     database=influx_config['source_db'],
-    ssl=(scheme == 'https')
+    ssl=(scheme == 'https'),
+    verify_ssl=False  # Disable SSL verification
 )
 
 # Query InfluxDB for metrics using InfluxQL
