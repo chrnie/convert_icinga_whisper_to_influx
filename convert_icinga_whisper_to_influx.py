@@ -102,7 +102,7 @@ client = InfluxDBClient(
     host=influx_config['url'].split('://')[1],
     username=influx_config['user'],
     password=influx_config['password'],
-    database=influx_config['source_bucket']
+    database=influx_config['source_db']
 )
 
 # Query InfluxDB for metrics using InfluxQL
@@ -124,7 +124,7 @@ for measurement in result.get_points():
 
     if os.path.isfile(wsp_file_path):
         convert_and_write_to_influx(
-            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_bucket'], args.simulate, args.verbose
+            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
         )
     else:
         logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
