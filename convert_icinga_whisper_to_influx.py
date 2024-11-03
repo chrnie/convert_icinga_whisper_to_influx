@@ -94,7 +94,7 @@ with open(args.config, 'r') as file:
 
 influx_config = config['influxdb']
 BASE_PATH = config['base_path']
-START_TIMESTAMP = int(datetime.strptime(config['start_date'], "%Y-%m-%d").timestamp())
+START_TIMESTAMP = int(datetime.strptime(str(config['start_date']), "%Y-%m-%d").timestamp())
 UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
 
 # Connect to InfluxDB
@@ -102,7 +102,7 @@ client = InfluxDBClient(
     host=influx_config['url'].split('://')[1],
     username=influx_config['user'],
     password=influx_config['password'],
-    database=influx_config['source_db']
+    database=influx_config['source_bucket']
 )
 
 # Query InfluxDB for metrics using InfluxQL
@@ -124,7 +124,7 @@ for measurement in result.get_points():
 
     if os.path.isfile(wsp_file_path):
         convert_and_write_to_influx(
-            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
+            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_bucket'], args.simulate, args.verbose
         )
     else:
         logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
