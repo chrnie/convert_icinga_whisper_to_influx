@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import argparse
 import urllib3
+import sys
 
 # Suppress only the single InsecureRequestWarning from urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -138,9 +139,17 @@ for measurement in measurements:
     logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
     for point in result.get_points():
-        hostname = point['hostname']
-        servicename = point['service']
-        metric = point['metric']
+        # Extract tags from the group key
+        tags = point.get('tags', {})
+        hostname = tags.get('hostname')
+        servicename = tags.get('service')
+        metric = tags.get('metric')
+
+        # Break if any tag is missing
+        if not hostname or not servicename or not metric:
+            logging.error(f"Missing required tags in measurement '{measurement_name}': hostname={hostname}, service={servicename}, metric={metric}")
+            sys.exit(1)
+
         end_timestamp = int(datetime.strptime(point['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
 
         wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
