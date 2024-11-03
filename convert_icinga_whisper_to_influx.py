@@ -150,7 +150,6 @@ for measurement in measurements:
         servicename = point[0][1]["service"]
         metric = point[0][1]["metric"]
         data = list(point[1])[0]
-        tags = point.get('tags', {})
         if not servicename:
             servicename = "HOSTCHECK"
         
