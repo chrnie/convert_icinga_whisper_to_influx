@@ -97,12 +97,19 @@ BASE_PATH = config['base_path']
 START_TIMESTAMP = int(datetime.strptime(str(config['start_date']), "%Y-%m-%d").timestamp())
 UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
 
+# Extract scheme, host, and port
+url = influx_config['url']
+scheme, rest = url.split('://')
+host, port = rest.split(':')
+
 # Connect to InfluxDB
 client = InfluxDBClient(
-    host=influx_config['url'].split('://')[1],
+    host=host,
+    port=int(port),
     username=influx_config['user'],
     password=influx_config['password'],
-    database=influx_config['source_db']
+    database=influx_config['source_db'],
+    ssl=(scheme == 'https')
 )
 
 # Query InfluxDB for metrics using InfluxQL
