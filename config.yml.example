@@ -1,0 +1,11 @@
+---
+influxdb:
+  url: http://localhost:8086
+  token: my_token
+  source_bucket: my_sbucket
+  target_bucket: my_tbucket
+  org: my_org
+
+start_date: 2022-01-01
+until_ts_offset: 5m
+base_path: /mig-perf-data/whisper/icinga2

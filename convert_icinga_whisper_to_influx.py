@@ -1,103 +1,126 @@
 #!/usr/bin/env python3
 
+import logging
 import os
 import re
-import datetime
-import logging
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.exceptions import InfluxDBError
-from whisper import fetch, create, update, info
+import whisper
 import yaml
+from datetime import datetime, timedelta
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+import argparse
 
-# Load configuration file
-with open('config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Process InfluxDB and convert wsp to line protocol.")
+parser.add_argument("--config", required=True, help="Path to the configuration YAML file")
+parser.add_argument("--simulate", action="store_true", help="Run in simulation mode (no data will be written)")
+parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+args = parser.parse_args()
 
-# Create InfluxDB client
-client = InfluxDBClient(url=config['influxdb']['url'], token=config['influxdb']['token'])
+# Configure logging
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_filename = f"script_{timestamp}.log"
+logging.basicConfig(filename=log_filename, level=logging.INFO, format="%(asctime)s - %(message)s")
 
-# Get bucket and organization from configuration file
-bucket = config['influxdb']['bucket']
-org = config['influxdb']['org']
-
-# Create query client
-query_api = client.query_api()
-
-# Function to sanitize variables
-def sanitize(var):
-    if var == 'metric':
-        return re.sub(r'[^a-zA-Z0-9_/]', '_', var)
+# Function to sanitize names
+def sanitize_name(name, allow_slash=False):
+    name = re.sub(r'[\\/\s\.]+', '_', name)
+    if allow_slash:
+        name = name.replace('::', '/')
     else:
-        return re.sub(r'[^a-zA-Z0-9_]', '_', var)
+        name = name.replace('::', '_')
+    return name
 
-# Function to convert Whisper files to Line Protocol
-def convert_whisper_to_line_protocol(file_path, hostname, service, metric):
+# Function to construct wsp file path
+def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metric):
+    return os.path.join(
+        base_path,
+        sanitize_name(hostname),
+        "services",
+        sanitize_name(servicename),
+        checkcommand,
+        "perfdata",
+        sanitize_name(metric, allow_slash=True),
+        "value.wsp"
+    )
+
+# Function to convert wsp to line protocol and write to InfluxDB
+def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_bucket, org, simulate, verbose):
     try:
-        # Read information about the Whisper file
-        info_data = info(file_path)
+        data_points = whisper.fetch(wsp_path, START_TIMESTAMP, end_timestamp)
+        if data_points is None:
+            logging.warning(f"No data points found in '{wsp_path}' within the specified range.")
+            return
 
-        # Determine start and end time for conversion
-        start_time = config['start_date']
-        end_time = datetime.datetime.now() - datetime.timedelta(minutes=5)
+        _, values = data_points
+        points_written = 0
 
-        # Read data from the Whisper file
-        data = fetch(file_path, start=start_time, end=end_time)
+        for timestamp, value in zip(data_points[0], values):
+            if value is None:
+                continue
 
-        # Convert data to Line Protocol
-        line_protocol_data = []
-        for timestamp, value in data:
-            line_protocol_data.append(f"{metric},hostname={hostname},service={service} value={value} {int(timestamp)}")
+            point = Point(checkcommand) \
+                .tag("hostname", hostname) \
+                .tag("metric", original_metric_name) \
+                .tag("service", servicename) \
+                .field("value", value) \
+                .time(timestamp)
 
-        # Write data to InfluxDB
-        write_api = client.write_api()
-        write_api.write(bucket, org, line_protocol_data)
+            if simulate:
+                if verbose:
+                    print(point.to_line_protocol())
+                logging.info(f"Simulated write: {point.to_line_protocol()}")
+            else:
+                write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+                write_api.write(bucket=target_bucket, org=org, record=point)
+                if verbose:
+                    print(point.to_line_protocol())
+                logging.info(f"Written: {point.to_line_protocol()}")
 
-        # Log success
-        logging.info(f"File {file_path} successfully converted and written to InfluxDB.")
+            points_written += 1
+
+        logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'}.")
 
     except Exception as e:
-        # Log error
-        logging.error(f"Error converting {file_path}: {str(e)}")
+        logging.error(f"Failed to read from Whisper file '{wsp_path}': {e}")
 
-# Function to create log file
-def create_logfile():
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_file_name = f"log_{timestamp}.log"
-    logging.basicConfig(filename=log_file_name, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Load configuration
+with open(args.config, 'r') as file:
+    config = yaml.safe_load(file)
 
-# Main function
-def main():
-    create_logfile()
+influx_config = config['influxdb']
+BASE_PATH = config['base_path']
+START_TIMESTAMP = int(datetime.strptime(config['start_date'], "%Y-%m-%d").timestamp())
+UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
 
-    # Query to retrieve hostname, service, metric combinations
-    query = f"""
-        from(bucket: "{bucket}")
-        |> range(start: -2d)
-        |> filter(fn: (r) => r._measurement == "measurement")
-        |> keep(columns: ["hostname", "service", "metric"])
-        |> group(columns: ["hostname", "service", "metric"])
-    """
+# Connect to InfluxDB
+client = InfluxDBClient(url=influx_config['url'], token=influx_config['token'], org=influx_config['org'])
 
-    # Read query result
-    result = query_api.query(org=org, query=query)
+# Query InfluxDB for metrics
+query_api = client.query_api()
+query = f'''
+from(bucket: "{influx_config['source_bucket']}")
+|> range(start: {config['start_date']})
+|> filter(fn: (r) => r._measurement == "checkcommand")
+|> group(columns: ["hostname", "service", "metric"])
+|> sort(columns: ["_time"], desc: false)
+|> first()
+'''
+result = query_api.query(org=influx_config['org'], query=query)
 
-    # Store result as dictionary
-    result_dict = {}
-    for table in result:
-        for record in table.records:
-            hostname = record.get('hostname')
-            service = record.get('service')
-            metric = record.get('metric')
-            result_dict[(hostname, service, metric)] = (sanitize(hostname), sanitize(service), sanitize(metric))
+for table in result:
+    for record in table.records:
+        hostname = record['hostname']
+        servicename = record['service']
+        checkcommand = record['_measurement']
+        metric = record['metric']
+        end_timestamp = int(record['_time'].timestamp()) - UNTIL_TS_OFFSET
 
-    # Iterate over results and convert Whisper files
-    for (hostname, service, metric), (sanitized_hostname, sanitized_service, sanitized_metric) in result_dict.items():
-        file_path = f"/mig-perf-data/whisper/icinga2/{sanitized_hostname}/services/{sanitized_service}/perfdata/{sanitized_metric}/value.wsp"
-        if os.path.exists(file_path):
-            logging.info(f"File {file_path} found. Converting to Line Protocol...")
-            convert_whisper_to_line_protocol(file_path, hostname, service, metric)
+        wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
+
+        if os.path.isfile(wsp_file_path):
+            convert_and_write_to_influx(
+                wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_bucket'], influx_config['org'], args.simulate, args.verbose
+            )
         else:
-            logging.info(f"File {file_path} not found.")
-
-if __name__ == "__main__":
-    main()
+            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")

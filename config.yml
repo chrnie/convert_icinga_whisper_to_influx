@@ -1,7 +1,0 @@
-influxdb:
-  url: http://localhost:8086
-  token: mein_token
-  bucket: mein_bucket
-  org: meine_org
-
-start_date: 2022-01-01
