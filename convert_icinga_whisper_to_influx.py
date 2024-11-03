@@ -5,6 +5,7 @@ import os
 import re
 import whisper
 import yaml
+import json
 from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import argparse
@@ -37,10 +38,15 @@ def sanitize_name(name, allow_slash=False):
 
 # Function to construct wsp file path
 def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metric):
+    if servicename == "HOSTCHECK":
+        wtype = "host"
+    else:
+        wtype = "services"
+        
     return os.path.join(
         base_path,
         sanitize_name(hostname),
-        "services",
+        wtype,
         sanitize_name(servicename),
         checkcommand,
         "perfdata",
@@ -101,7 +107,7 @@ logging.info("Configuration loaded successfully.")
 influx_config = config['influxdb']
 BASE_PATH = config['base_path']
 START_TIMESTAMP = int(datetime.strptime(str(config['start_date']), "%Y-%m-%d").timestamp())
-UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
+UNTIL_TS_OFFSET = config['until_ts_offset']
 
 # Extract scheme, host, and port
 url = influx_config['url']
@@ -138,19 +144,22 @@ for measurement in measurements:
     metrics_count = len(list(result.get_points()))
     logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
-    for point in result.get_points():
+    for point in result.items():
         # Extract tags from the group key
+        hostname = point[0][1]["hostname"]
+        servicename = point[0][1]["service"]
+        metric = point[0][1]["metric"]
+        data = list(point[1])[0]
         tags = point.get('tags', {})
-        hostname = tags.get('hostname')
-        servicename = tags.get('service')
-        metric = tags.get('metric')
-
+        if not servicename:
+            servicename = "HOSTCHECK"
+        
         # Break if any tag is missing
-        if not hostname or not servicename or not metric:
+        if not hostname or not metric:
             logging.error(f"Missing required tags in measurement '{measurement_name}': hostname={hostname}, service={servicename}, metric={metric}")
             sys.exit(1)
 
-        end_timestamp = int(datetime.strptime(point['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+        end_timestamp = int(datetime.strptime(data['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
 
         wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
 
@@ -160,4 +169,4 @@ for measurement in measurements:
                 wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
             )
         else:
-            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
+            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")

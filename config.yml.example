@@ -7,5 +7,6 @@ influxdb:
   target_db: targetdb
 
 start_date: 2022-01-01
-until_ts_offset: 5m
+#enter offset in seconds
+until_ts_offset: 0
 base_path: /mig-perf-data/whisper/icinga2
