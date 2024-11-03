@@ -6,8 +6,7 @@ import re
 import whisper
 import yaml
 from datetime import datetime, timedelta
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb import InfluxDBClient
 import argparse
 
 # Parse command-line arguments
@@ -45,7 +44,7 @@ def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metr
     )
 
 # Function to convert wsp to line protocol and write to InfluxDB
-def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_bucket, org, simulate, verbose):
+def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, verbose):
     try:
         data_points = whisper.fetch(wsp_path, START_TIMESTAMP, end_timestamp)
         if data_points is None:
@@ -59,23 +58,28 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
             if value is None:
                 continue
 
-            point = Point(checkcommand) \
-                .tag("hostname", hostname) \
-                .tag("metric", original_metric_name) \
-                .tag("service", servicename) \
-                .field("value", value) \
-                .time(timestamp)
+            point = {
+                "measurement": checkcommand,
+                "tags": {
+                    "hostname": hostname,
+                    "metric": original_metric_name,
+                    "service": servicename
+                },
+                "time": datetime.utcfromtimestamp(timestamp).isoformat(),
+                "fields": {
+                    "value": value
+                }
+            }
 
             if simulate:
                 if verbose:
-                    print(point.to_line_protocol())
-                logging.info(f"Simulated write: {point.to_line_protocol()}")
+                    print(point)
+                logging.info(f"Simulated write: {point}")
             else:
-                write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-                write_api.write(bucket=target_bucket, org=org, record=point)
+                influx_client.write_points([point], database=target_db)
                 if verbose:
-                    print(point.to_line_protocol())
-                logging.info(f"Written: {point.to_line_protocol()}")
+                    print(point)
+                logging.info(f"Written: {point}")
 
             points_written += 1
 
@@ -94,33 +98,33 @@ START_TIMESTAMP = int(datetime.strptime(config['start_date'], "%Y-%m-%d").timest
 UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
 
 # Connect to InfluxDB
-client = InfluxDBClient(url=influx_config['url'], token=influx_config['token'], org=influx_config['org'])
+client = InfluxDBClient(
+    host=influx_config['url'].split('://')[1],
+    username=influx_config['user'],
+    password=influx_config['password'],
+    database=influx_config['source_db']
+)
 
-# Query InfluxDB for metrics
-query_api = client.query_api()
+# Query InfluxDB for metrics using InfluxQL
 query = f'''
-from(bucket: "{influx_config['source_bucket']}")
-|> range(start: {config['start_date']})
-|> filter(fn: (r) => r._measurement == "checkcommand")
-|> group(columns: ["hostname", "service", "metric"])
-|> sort(columns: ["_time"], desc: false)
-|> first()
+SELECT FIRST(value) FROM "checkcommand"
+WHERE time >= '{config['start_date']}'
+GROUP BY "hostname", "service", "metric"
 '''
-result = query_api.query(org=influx_config['org'], query=query)
+result = client.query(query)
 
-for table in result:
-    for record in table.records:
-        hostname = record['hostname']
-        servicename = record['service']
-        checkcommand = record['_measurement']
-        metric = record['metric']
-        end_timestamp = int(record['_time'].timestamp()) - UNTIL_TS_OFFSET
+for measurement in result.get_points():
+    hostname = measurement['hostname']
+    servicename = measurement['service']
+    checkcommand = "checkcommand"
+    metric = measurement['metric']
+    end_timestamp = int(datetime.strptime(measurement['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
 
-        wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
+    wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
 
-        if os.path.isfile(wsp_file_path):
-            convert_and_write_to_influx(
-                wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_bucket'], influx_config['org'], args.simulate, args.verbose
-            )
-        else:
-            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
+    if os.path.isfile(wsp_file_path):
+        convert_and_write_to_influx(
+            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
+        )
+    else:
+        logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")

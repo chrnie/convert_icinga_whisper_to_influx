@@ -1,10 +1,10 @@
 ---
 influxdb:
   url: http://localhost:8086
-  token: my_token
-  source_bucket: my_sbucket
-  target_bucket: my_tbucket
-  org: my_org
+  user: my_user
+  password: my_password
+  source_db: sourcedb
+  target_db: targetdb
 
 start_date: 2022-01-01
 until_ts_offset: 5m
