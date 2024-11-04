@@ -10,6 +10,7 @@ from influxdb import InfluxDBClient
 import argparse
 import urllib3
 import sys
+from tqdm import tqdm  # Import tqdm for progress bar
 
 # Suppress only the single InsecureRequestWarning from urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -145,31 +146,36 @@ for measurement in measurements:
     limit 1
     '''
     result = client.query(query)
-    metrics_count = len(list(result.get_points()))
+    metrics = list(result.get_points())
+    metrics_count = len(metrics)
     logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
-    for point in result.items():
-        # Extract tags from the group key
-        hostname = point[0][1]["hostname"]
-        servicename = point[0][1]["service"]
-        metric = point[0][1]["metric"]
-        data = list(point[1])[0]
-        if not servicename:
-            servicename = "HOSTCHECK"
-        
-        # Break if any tag is missing
-        if not hostname or not metric:
-            logging.error(f"Missing required tags in measurement '{measurement_name}': hostname={hostname}, service={servicename}, metric={metric}")
-            sys.exit(1)
+    # Initialize progress bar
+    with tqdm(total=metrics_count, desc=f"Processing {measurement_name}", unit="metric") as pbar:
+        for point in result.items():
+            # Extract tags from the group key
+            hostname = point[0][1]["hostname"]
+            servicename = point[0][1]["service"]
+            metric = point[0][1]["metric"]
+            data = list(point[1])[0]
+            if not servicename:
+                servicename = "HOSTCHECK"
+            
+            # Break if any tag is missing
+            if not hostname or not metric:
+                logging.error(f"Missing required tags in measurement '{measurement_name}': hostname={hostname}, service={servicename}, metric={metric}")
+                sys.exit(1)
 
-        end_timestamp = int(datetime.strptime(data['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+            end_timestamp = int(datetime.strptime(data['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
 
-        wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
+            wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
 
-        if os.path.isfile(wsp_file_path):
-            logging.info(f"Processing WSP file: {wsp_file_path}")
-            convert_and_write_to_influx(
-                wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug
-            )
-        else:
-            logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
+            if os.path.isfile(wsp_file_path):
+                logging.info(f"Processing WSP file: {wsp_file_path}")
+                convert_and_write_to_influx(
+                    wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug
+                )
+            else:
+                logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
+            
+            pbar.update(1)  # Update progress bar
