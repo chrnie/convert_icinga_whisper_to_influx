@@ -18,7 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 parser = argparse.ArgumentParser(description="Process InfluxDB and convert wsp to line protocol.")
 parser.add_argument("--config", required=True, help="Path to the configuration YAML file")
 parser.add_argument("--simulate", action="store_true", help="Run in simulation mode (no data will be written)")
-parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+parser.add_argument("--debug", action="store_true", help="Enable debug output")
 args = parser.parse_args()
 
 # Configure logging
@@ -54,19 +54,23 @@ def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metr
     )
 
 # Function to convert wsp to line protocol and write to InfluxDB
-def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, verbose):
+def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, debug):
     try:
         data_points = whisper.fetch(wsp_path, START_TIMESTAMP, end_timestamp)
         if data_points is None:
             logging.warning(f"No data points found in '{wsp_path}' within the specified range.")
             return
 
-        timestamps, values = data_points
+        timeInfo, values = data_points
+        (start, end, step) = timeInfo
         points_written = 0
+        points_skipped = 0
 
-        for timestamp, value in zip(timestamps, values):
+        t = start
+        for value in values:
             # Skip empty values
             if value is None:
+                points_skipped += 1
                 continue
 
             point = {
@@ -76,23 +80,23 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
                     "metric": original_metric_name,
                     "service": servicename
                 },
-                "time": datetime.utcfromtimestamp(timestamp).isoformat(),
+                "time": str(t),
                 "fields": {
                     "value": value
                 }
             }
 
             if simulate:
-                if verbose:
+                if debug:
                     logging.info(f"Simulated write: {point}")
             else:
                 influx_client.write_points([point], database=target_db)
-                if verbose:
+                if debug:
                     logging.info(f"Written: {point}")
-
+            t+=step
             points_written += 1
 
-        logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'} from {START_TIMESTAMP} to {end_timestamp}.")
+        logging.info(f"Processed '{wsp_path}': written:{points_written} skipped:{points_skipped} data points {'simulated' if simulate else 'written'} from {START_TIMESTAMP} to {end_timestamp}.")
 
     except Exception as e:
         logging.error(f"Failed to read from Whisper file '{wsp_path}': {e}")
@@ -165,7 +169,7 @@ for measurement in measurements:
         if os.path.isfile(wsp_file_path):
             logging.info(f"Processing WSP file: {wsp_file_path}")
             convert_and_write_to_influx(
-                wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
+                wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug
             )
         else:
             logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
