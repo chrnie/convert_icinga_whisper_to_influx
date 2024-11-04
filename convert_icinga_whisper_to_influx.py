@@ -131,8 +131,10 @@ logging.info(f"Connected to InfluxDB at {url}.")
 
 # Query InfluxDB for all measurements
 measurements = client.get_list_measurements()
-logging.info(f"Found {len(measurements)} measurements.")
-
+measurements_total = len(measurements)
+logging.info(f"Found {measurements_total} measurements.")
+print(f"Found {measurements_total} measurements.")
+measurements_count=1
 for measurement in measurements:
     measurement_name = measurement['name']
     logging.info(f"Processing measurement: {measurement_name}")
@@ -151,7 +153,7 @@ for measurement in measurements:
     logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
     # Initialize progress bar
-    with tqdm(total=metrics_count, desc=f"Processing {measurement_name}", unit="metric") as pbar:
+    with tqdm(total=metrics_count, desc=f"{measurements_count}/{measurements_total}: Processing {measurement_name}", unit="metric") as pbar:
         for point in result.items():
             # Extract tags from the group key
             hostname = point[0][1]["hostname"]
@@ -179,3 +181,4 @@ for measurement in measurements:
                 logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
             
             pbar.update(1)  # Update progress bar
+    measurements_count+=1
