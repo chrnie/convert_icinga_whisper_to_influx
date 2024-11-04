@@ -5,7 +5,6 @@ import os
 import re
 import whisper
 import yaml
-import json
 from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import argparse
@@ -62,37 +61,48 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
             logging.warning(f"No data points found in '{wsp_path}' within the specified range.")
             return
 
-        _, values = data_points
+        timestamps, values = data_points
         points_written = 0
 
-        for timestamp, value in zip(data_points[0], values):
-            if value is None:
-                continue
+        # Ensure at least one data point every 6 hours
+        interval = 6 * 3600  # 6 hours in seconds
+        current_time = START_TIMESTAMP
 
-            point = {
-                "measurement": checkcommand,
-                "tags": {
-                    "hostname": hostname,
-                    "metric": original_metric_name,
-                    "service": servicename
-                },
-                "time": datetime.utcfromtimestamp(timestamp).isoformat(),
-                "fields": {
-                    "value": value
+        while current_time <= end_timestamp:
+            # Find the closest available data point
+            closest_value = None
+            for timestamp, value in zip(timestamps, values):
+                if timestamp >= current_time:
+                    closest_value = value
+                    break
+
+            if closest_value is not None:
+                point = {
+                    "measurement": checkcommand,
+                    "tags": {
+                        "hostname": hostname,
+                        "metric": original_metric_name,
+                        "service": servicename
+                    },
+                    "time": datetime.utcfromtimestamp(current_time).isoformat(),
+                    "fields": {
+                        "value": closest_value
+                    }
                 }
-            }
 
-            if simulate:
-                if verbose:
-                    print(point)
-                logging.info(f"Simulated write: {point}")
-            else:
-                influx_client.write_points([point], database=target_db)
-                if verbose:
-                    print(point)
-                logging.info(f"Written: {point}")
+                if simulate:
+                    if verbose:
+                        print(point)
+                    logging.info(f"Simulated write: {point}")
+                else:
+                    influx_client.write_points([point], database=target_db)
+                    if verbose:
+                        print(point)
+                    logging.info(f"Written: {point}")
 
-            points_written += 1
+                points_written += 1
+
+            current_time += interval
 
         logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'}.")
 
