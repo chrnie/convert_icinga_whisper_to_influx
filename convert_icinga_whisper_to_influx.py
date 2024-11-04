@@ -66,7 +66,7 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
 
         for timestamp, value in zip(timestamps, values):
             # Skip empty values
-            if value is None or value == 0:
+            if value is None:
                 continue
 
             point = {
@@ -84,17 +84,15 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
 
             if simulate:
                 if verbose:
-                    print(point)
-                logging.info(f"Simulated write: {point}")
+                    logging.info(f"Simulated write: {point}")
             else:
                 influx_client.write_points([point], database=target_db)
                 if verbose:
-                    print(point)
-                logging.info(f"Written: {point}")
+                    logging.info(f"Written: {point}")
 
             points_written += 1
 
-        logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'}.")
+        logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'} from {START_TIMESTAMP} to {end_timestamp}.")
 
     except Exception as e:
         logging.error(f"Failed to read from Whisper file '{wsp_path}': {e}")
@@ -136,9 +134,11 @@ for measurement in measurements:
 
     # Query each measurement for metrics
     query = f'''
-    SELECT FIRST(*) FROM "{measurement_name}"
+    SELECT * FROM "{measurement_name}"
     WHERE time >= '{config['start_date']}'
     GROUP BY "hostname", "service", "metric"
+    ORDER BY time ASC
+    limit 1
     '''
     result = client.query(query)
     metrics_count = len(list(result.get_points()))
