@@ -81,7 +81,7 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
                     "metric": original_metric_name,
                     "service": servicename
                 },
-                "time": str(t),
+                "time": datetime.utcfromtimestamp(t).strftime('%Y-%m-%dT%H:%M:%SZ'),  # Konvertiere t hier in das ISO-Format
                 "fields": {
                     "value": value
                 }
