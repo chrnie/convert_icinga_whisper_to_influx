@@ -8,12 +8,18 @@ import yaml
 from datetime import datetime, timedelta
 from influxdb import InfluxDBClient
 import argparse
+import urllib3
+import sys
+from tqdm import tqdm  # Import tqdm for progress bar
+
+# Suppress only the single InsecureRequestWarning from urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Process InfluxDB and convert wsp to line protocol.")
 parser.add_argument("--config", required=True, help="Path to the configuration YAML file")
 parser.add_argument("--simulate", action="store_true", help="Run in simulation mode (no data will be written)")
-parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+parser.add_argument("--debug", action="store_true", help="Enable debug output")
 args = parser.parse_args()
 
 # Configure logging
@@ -32,10 +38,15 @@ def sanitize_name(name, allow_slash=False):
 
 # Function to construct wsp file path
 def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metric):
+    if servicename == "HOSTCHECK":
+        wtype = "host"
+    else:
+        wtype = "services"
+        
     return os.path.join(
         base_path,
         sanitize_name(hostname),
-        "services",
+        wtype,
         sanitize_name(servicename),
         checkcommand,
         "perfdata",
@@ -44,18 +55,23 @@ def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metr
     )
 
 # Function to convert wsp to line protocol and write to InfluxDB
-def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, verbose):
+def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, debug):
     try:
         data_points = whisper.fetch(wsp_path, START_TIMESTAMP, end_timestamp)
         if data_points is None:
             logging.warning(f"No data points found in '{wsp_path}' within the specified range.")
             return
 
-        _, values = data_points
+        timeInfo, values = data_points
+        (start, end, step) = timeInfo
         points_written = 0
+        points_skipped = 0
 
-        for timestamp, value in zip(data_points[0], values):
+        t = start
+        for value in values:
+            # Skip empty values
             if value is None:
+                points_skipped += 1
                 continue
 
             point = {
@@ -65,25 +81,23 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
                     "metric": original_metric_name,
                     "service": servicename
                 },
-                "time": datetime.utcfromtimestamp(timestamp).isoformat(),
+                "time": datetime.utcfromtimestamp(t).strftime('%Y-%m-%dT%H:%M:%SZ'),  # Konvertiere t hier in das ISO-Format
                 "fields": {
                     "value": value
                 }
             }
 
             if simulate:
-                if verbose:
-                    print(point)
-                logging.info(f"Simulated write: {point}")
+                if debug:
+                    logging.info(f"Simulated write: {point}")
             else:
                 influx_client.write_points([point], database=target_db)
-                if verbose:
-                    print(point)
-                logging.info(f"Written: {point}")
-
+                if debug:
+                    logging.info(f"Written: {point}")
+            t+=step
             points_written += 1
 
-        logging.info(f"Processed '{wsp_path}': {points_written} data points {'simulated' if simulate else 'written'}.")
+        logging.info(f"Processed '{wsp_path}': written:{points_written} skipped:{points_skipped} data points {'simulated' if simulate else 'written'} from {START_TIMESTAMP} to {end_timestamp}.")
 
     except Exception as e:
         logging.error(f"Failed to read from Whisper file '{wsp_path}': {e}")
@@ -91,40 +105,80 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
 # Load configuration
 with open(args.config, 'r') as file:
     config = yaml.safe_load(file)
+logging.info("Configuration loaded successfully.")
 
 influx_config = config['influxdb']
 BASE_PATH = config['base_path']
-START_TIMESTAMP = int(datetime.strptime(config['start_date'], "%Y-%m-%d").timestamp())
-UNTIL_TS_OFFSET = int(timedelta(minutes=int(config['until_ts_offset'].strip('m'))).total_seconds())
+START_TIMESTAMP = int(datetime.strptime(str(config['start_date']), "%Y-%m-%d").timestamp())
+UNTIL_TS_OFFSET = config['until_ts_offset']
+
+# Extract scheme, host, and port
+url = influx_config['url']
+scheme, rest = url.split('://')
+host, port = rest.split(':')
 
 # Connect to InfluxDB
 client = InfluxDBClient(
-    host=influx_config['url'].split('://')[1],
+    host=host,
+    port=int(port),
     username=influx_config['user'],
     password=influx_config['password'],
-    database=influx_config['source_db']
+    database=influx_config['source_db'],
+    ssl=(scheme == 'https'),
+    verify_ssl=False  # Disable SSL verification
 )
+logging.info(f"Connected to InfluxDB at {url}.")
 
-# Query InfluxDB for metrics using InfluxQL
-query = f'''
-SELECT FIRST(value) FROM "checkcommand"
-WHERE time >= '{config['start_date']}'
-GROUP BY "hostname", "service", "metric"
-'''
-result = client.query(query)
+# Query InfluxDB for all measurements
+measurements = client.get_list_measurements()
+measurements_total = len(measurements)
+logging.info(f"Found {measurements_total} measurements.")
+print(f"Found {measurements_total} measurements.")
+measurements_count=1
+for measurement in measurements:
+    measurement_name = measurement['name']
+    logging.info(f"Processing measurement: {measurement_name}")
 
-for measurement in result.get_points():
-    hostname = measurement['hostname']
-    servicename = measurement['service']
-    checkcommand = "checkcommand"
-    metric = measurement['metric']
-    end_timestamp = int(datetime.strptime(measurement['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+    # Query each measurement for metrics
+    query = f'''
+    SELECT * FROM "{measurement_name}"
+    WHERE time >= '{config['start_date']}'
+    GROUP BY "hostname", "service", "metric"
+    ORDER BY time ASC
+    limit 1
+    '''
+    result = client.query(query)
+    metrics = list(result.get_points())
+    metrics_count = len(metrics)
+    logging.info(f"Found {metrics_count} metrics in measurement '{measurement_name}'.")
 
-    wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, checkcommand, metric)
+    # Initialize progress bar
+    with tqdm(total=metrics_count, desc=f"{measurements_count}/{measurements_total}: Processing {measurement_name}", unit="metric") as pbar:
+        for point in result.items():
+            # Extract tags from the group key
+            hostname = point[0][1]["hostname"]
+            servicename = point[0][1]["service"]
+            metric = point[0][1]["metric"]
+            data = list(point[1])[0]
+            if not servicename:
+                servicename = "HOSTCHECK"
+            
+            # Break if any tag is missing
+            if not hostname or not metric:
+                logging.error(f"Missing required tags in measurement '{measurement_name}': hostname={hostname}, service={servicename}, metric={metric}")
+                sys.exit(1)
 
-    if os.path.isfile(wsp_file_path):
-        convert_and_write_to_influx(
-            wsp_file_path, hostname, servicename, checkcommand, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.verbose
-        )
-    else:
-        logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}'.")
+            end_timestamp = int(datetime.strptime(data['time'], "%Y-%m-%dT%H:%M:%SZ").timestamp()) - UNTIL_TS_OFFSET
+
+            wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
+
+            if os.path.isfile(wsp_file_path):
+                logging.info(f"Processing WSP file: {wsp_file_path}")
+                convert_and_write_to_influx(
+                    wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug
+                )
+            else:
+                logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
+            
+            pbar.update(1)  # Update progress bar
+    measurements_count+=1
