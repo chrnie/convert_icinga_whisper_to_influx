@@ -177,8 +177,8 @@ for measurement in measurements:
 
             wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
 
-            # Check if 'Unit' exists in the data
-            unit = data.get('Unit', None)
+            # Check if 'unit' exists in the data
+            unit = data.get('unit', None)
 
             if os.path.isfile(wsp_file_path):
                 logging.info(f"Processing WSP file: {wsp_file_path}")
