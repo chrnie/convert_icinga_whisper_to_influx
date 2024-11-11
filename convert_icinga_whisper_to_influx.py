@@ -55,7 +55,8 @@ def construct_wsp_file_path(base_path, hostname, servicename, checkcommand, metr
     )
 
 # Function to convert wsp to line protocol and write to InfluxDB
-def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, debug):
+# Modify the convert_and_write_to_influx function to accept a unit parameter
+def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, original_metric_name, end_timestamp, influx_client, target_db, simulate, debug, unit=None):
     try:
         data_points = whisper.fetch(wsp_path, START_TIMESTAMP, end_timestamp)
         if data_points is None:
@@ -87,6 +88,10 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
                 }
             }
 
+            # Add unit to fields if it exists
+            if unit:
+                point["fields"]["unit"] = unit
+
             if simulate:
                 if debug:
                     logging.info(f"Simulated write: {point}")
@@ -94,7 +99,7 @@ def convert_and_write_to_influx(wsp_path, hostname, servicename, checkcommand, o
                 influx_client.write_points([point], database=target_db)
                 if debug:
                     logging.info(f"Written: {point}")
-            t+=step
+            t += step
             points_written += 1
 
         logging.info(f"Processed '{wsp_path}': written:{points_written} skipped:{points_skipped} data points {'simulated' if simulate else 'written'} from {START_TIMESTAMP} to {end_timestamp}.")
@@ -172,10 +177,13 @@ for measurement in measurements:
 
             wsp_file_path = construct_wsp_file_path(BASE_PATH, hostname, servicename, measurement_name, metric)
 
+            # Check if 'Unit' exists in the data
+            unit = data.get('Unit', None)
+
             if os.path.isfile(wsp_file_path):
                 logging.info(f"Processing WSP file: {wsp_file_path}")
                 convert_and_write_to_influx(
-                    wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug
+                    wsp_file_path, hostname, servicename, measurement_name, metric, end_timestamp, client, influx_config['target_db'], args.simulate, args.debug, unit
                 )
             else:
                 logging.warning(f"No 'value.wsp' file found at path: '{wsp_file_path}' for metric '{metric}', service '{servicename}', checkcommand '{measurement_name}'.")
